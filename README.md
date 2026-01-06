@@ -26,7 +26,7 @@ Copy the built plugin jar into your KickAssembler classpath and load it:
 From the command line, include the plugin jar on the KickAssembler classpath:
 
 ```
-java -jar KickAss.jar -lib tscrunch-kickass-plugin-1.0.0.jar yourfile.asm
+java -cp "kickass.jar;tscrunch-kickass-plugin-1.0.0.jar" cml.kickass.KickAssembler yourfile.asm
 ```
 
 Adjust paths as needed if your jar or `KickAss.jar` live elsewhere.
