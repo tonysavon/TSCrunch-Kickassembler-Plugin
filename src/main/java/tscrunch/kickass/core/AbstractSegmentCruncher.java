@@ -1,0 +1,54 @@
+package tscrunch.kickass.core;
+
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.function.Function;
+import java.util.stream.Collectors;
+
+import kickass.nonasm.tools.tuples.Pair;
+import kickass.plugins.interf.general.IEngine;
+import kickass.plugins.interf.general.IMemoryBlock;
+import kickass.plugins.interf.general.IParameterMap;
+import kickass.plugins.interf.segmentmodifier.ISegmentModifier;
+import kickass.plugins.interf.segmentmodifier.SegmentModifierDefinition;
+import tscrunch.kickass.core.AbstractCruncher.CruncherContext;
+
+public class AbstractSegmentCruncher implements ISegmentModifier {
+
+    private final AbstractCruncher abstractCruncher;
+    private final SegmentModifierDefinition segmentModifierDefinition = new SegmentModifierDefinition();
+
+    public AbstractSegmentCruncher(AbstractCruncher abstractCruncher) {
+        this.abstractCruncher = abstractCruncher;
+        this.segmentModifierDefinition.setName(abstractCruncher.getName());
+        Set<String> params = new HashSet<>(abstractCruncher.getParams());
+        params.add(Options.USE_CRUNCHER_CACHE.getName());
+        this.segmentModifierDefinition.setAllParameters(params);
+    }
+
+    private final Function<CruncherContext, List<IMemoryBlock>> postProcessor = context -> {
+        List<Pair<IMemoryBlock, CrunchedObject>> tuples = new ArrayList<>();
+        for (int i = 0; i < context.blocks.size(); i++) {
+            tuples.add(new Pair<>(context.blocks.get(i), context.crunchedObjects.get(i)));
+        }
+        return tuples.stream().map(
+            tuple -> context.engine.createMemoryBlock(
+                tuple.getA().getName(),
+                tuple.getB().address,
+                tuple.getB().data))
+            .collect(Collectors.toList());
+    };
+
+    @Override
+    public List<IMemoryBlock> execute(List<IMemoryBlock> blocks, IParameterMap parameters, IEngine engine) {
+        return abstractCruncher.execute(blocks, parameters, engine, postProcessor);
+    }
+
+    @Override
+    public SegmentModifierDefinition getDefinition() {
+        return segmentModifierDefinition;
+    }
+
+}

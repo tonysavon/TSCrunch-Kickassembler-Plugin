@@ -1,0 +1,40 @@
+<?xml version="1.0"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>tscrunch.kickass</groupId>
+  <artifactId>tscrunch-kickass-plugin</artifactId>
+  <version>1.0.0</version>
+  <name>TSCrunch KickAssembler Plugin</name>
+  <description>KickAssembler cruncher plugin for TSCrunch</description>
+  <build>
+    <plugins>
+      <plugin>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <configuration>
+          <encoding>UTF-8</encoding>
+          <source>11</source>
+          <target>11</target>
+        </configuration>
+      </plugin>
+    </plugins>
+    <pluginManagement>
+      <plugins>
+        <plugin>
+          <artifactId>maven-compiler-plugin</artifactId>
+          <version>3.11.0</version>
+        </plugin>
+      </plugins>
+    </pluginManagement>
+  </build>
+  <dependencies>
+    <dependency>
+      <groupId>cml.kickass</groupId>
+      <artifactId>KickAss</artifactId>
+      <version>5.25</version>
+      <scope>system</scope>
+      <systemPath>${basedir}/KickAss.jar</systemPath>
+    </dependency>
+  </dependencies>
+</project>
