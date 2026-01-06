@@ -79,7 +79,7 @@ Note: SFX output is written as a standard PRG with load address $0801.
 .label crunchedData = *
 .modify TS() {
     .pc = $2000 "Charset"
-    ,import binary "chars.bin"
+    .import binary "chars.bin"
 }
 ```
 
