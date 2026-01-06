@@ -27,7 +27,7 @@ main:
         
         jmp *
 
-#import "decrunch.asm"
+#import "../decrunch.asm"
 
 
 scrdata:
