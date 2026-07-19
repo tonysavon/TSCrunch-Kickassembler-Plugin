@@ -5,7 +5,7 @@ import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.PriorityQueue;
+import java.util.stream.IntStream;
 
 public class TSCrunch {
     private static final int LONGESTRLE = 64;
@@ -14,6 +14,7 @@ public class TSCrunch {
     private static final int LONGESTLITERAL = 31;
     private static final int MINRLE = 2;
     private static final int MINLZ = 3;
+    private static final int MINLZOFFSET = 2;
     private static final int LZOFFSET = 256;
     private static final int LONGLZOFFSET = 32767;
     private static final int LZ2OFFSET = 94;
@@ -142,10 +143,9 @@ public class TSCrunch {
         int rlebyte;
     }
 
-    private static class Edge {
-        int dest;
-        long cost;
-        Token token;
+    private static class LZCandidates {
+        Token shortMatch;
+        Token longMatch;
     }
 
     private static class Options {
@@ -263,7 +263,7 @@ public class TSCrunch {
     }
 
     private static int lz2Offset(byte[] src, int pos) {
-        if (pos + LZ2SIZE >= src.length) {
+        if (pos + LZ2SIZE > src.length) {
             return -1;
         }
         int start = pos - LZ2OFFSET;
@@ -278,26 +278,61 @@ public class TSCrunch {
         return -1;
     }
 
-    private static Token lzBest(byte[] src, int pos, int minlz) {
+    private static int[] buildPrefixPrevious(byte[] src) {
+        int[] previous = new int[src.length];
+        Arrays.fill(previous, -1);
+        if (src.length < MINLZ) {
+            return previous;
+        }
+
+        int entries = src.length - MINLZ + 1;
+        int capacity = 16;
+        while (capacity < entries * 2) {
+            capacity <<= 1;
+        }
+        int[] keys = new int[capacity];
+        int[] heads = new int[capacity];
+        Arrays.fill(keys, -1);
+        Arrays.fill(heads, -1);
+        int mask = capacity - 1;
+
+        for (int i = 0; i + MINLZ <= src.length; i++) {
+            int key = ((src[i] & 0xff) << 16) |
+                      ((src[i + 1] & 0xff) << 8) |
+                      (src[i + 2] & 0xff);
+            int slot = (key * 0x9e3779b1) & mask;
+            while (keys[slot] != -1 && keys[slot] != key) {
+                slot = (slot + 1) & mask;
+            }
+            if (keys[slot] == -1) {
+                keys[slot] = key;
+            }
+            previous[i] = heads[slot];
+            heads[slot] = i;
+        }
+        return previous;
+    }
+
+    private static Token makeLz(int pos, int size, int offset) {
         Token t = new Token();
         t.type = TokenType.LZ;
         t.pos = pos;
-        t.size = 0;
-        t.offset = 0;
-        t.rlebyte = 0;
+        t.size = size;
+        t.offset = offset;
+        return t;
+    }
 
+    private static LZCandidates findLzCandidates(byte[] src, int pos, int minlz,
+                                                  int[] prefixPrevious) {
+        LZCandidates candidates = new LZCandidates();
+        candidates.shortMatch = makeLz(pos, 0, 0);
+        candidates.longMatch = makeLz(pos, 0, 0);
         if (src.length - pos < minlz) {
-            return t;
+            return candidates;
         }
 
-        int bestpos = pos - 1;
-        int bestlen = 0;
-        int x0 = pos - LONGLZOFFSET;
-        if (x0 < 0) {
-            x0 = 0;
-        }
-
-        for (int j = pos - 1; j >= x0; j--) {
+        int x0 = Math.max(0, pos - LONGLZOFFSET);
+        for (int j = prefixPrevious[pos]; j >= x0; j = prefixPrevious[j]) {
             boolean match = true;
             for (int k = 0; k < minlz; k++) {
                 if (src[j + k] != src[pos + k]) {
@@ -308,27 +343,35 @@ public class TSCrunch {
             if (!match) {
                 continue;
             }
-
-            int l = minlz;
-            while (pos + l < src.length && l < LONGESTLONGLZ && src[j + l] == src[pos + l]) {
-                l++;
+            int offset = pos - j;
+            if (offset < MINLZOFFSET) {
+                continue;
             }
-            if ((l > bestlen && (pos - j < LZOFFSET || pos - bestpos >= LZOFFSET || l > LONGESTLZ)) || (l > bestlen + 1)) {
-                bestpos = j;
-                bestlen = l;
+            int length = minlz;
+            while (pos + length < src.length && length < LONGESTLONGLZ &&
+                   src[j + length] == src[pos + length]) {
+                length++;
+            }
+            if (offset < LZOFFSET) {
+                int shortLength = minInt(length, LONGESTLZ);
+                if (shortLength > candidates.shortMatch.size ||
+                    (shortLength == candidates.shortMatch.size && offset < candidates.shortMatch.offset)) {
+                    candidates.shortMatch = makeLz(pos, shortLength, offset);
+                }
+            }
+            if (length > candidates.longMatch.size ||
+                (length == candidates.longMatch.size && offset < candidates.longMatch.offset)) {
+                candidates.longMatch = makeLz(pos, length, offset);
             }
         }
-
-        t.size = bestlen;
-        t.offset = pos - bestpos;
-        return t;
+        return candidates;
     }
 
     private static boolean zeroRunAt(byte[] src, int pos, int run) {
         if (run <= 0) {
             return false;
         }
-        if (pos + run >= src.length) {
+        if (pos + run > src.length) {
             return false;
         }
         for (int i = 0; i < run; i++) {
@@ -414,17 +457,95 @@ public class TSCrunch {
         }
     }
 
-    private static Token copyToken(Token t) {
-        if (t == null) {
-            return null;
+    private static Token[] buildCandidateRow(byte[] src, int pos, int optimalRun,
+                                             int[] prefixPrevious) {
+        boolean[] present = new boolean[257];
+        Token[] tokens = new Token[257];
+        int maxSize = 0;
+
+        int rleSize = rleLength(src, pos);
+        int rleCap = minInt(rleSize, LONGESTRLE);
+        LZCandidates lz = new LZCandidates();
+        lz.shortMatch = makeLz(pos, 0, 0);
+        lz.longMatch = makeLz(pos, 0, 0);
+        if (rleCap < LONGESTLONGLZ - 1) {
+            int minlz = maxInt(rleCap + 1, MINLZ);
+            lz = findLzCandidates(src, pos, minlz, prefixPrevious);
         }
-        Token c = new Token();
-        c.type = t.type;
-        c.pos = t.pos;
-        c.size = t.size;
-        c.offset = t.offset;
-        c.rlebyte = t.rlebyte;
-        return c;
+
+        for (int size = lz.shortMatch.size; size >= MINLZ && size > rleCap; size--) {
+            Token t = makeLz(pos, size, lz.shortMatch.offset);
+            tokens[size] = t;
+            present[size] = true;
+            maxSize = maxInt(maxSize, size);
+        }
+        int longMinimum = maxInt(maxInt(MINLZ, rleCap + 1), lz.shortMatch.size + 1);
+        for (int size = lz.longMatch.size; size >= longMinimum; size--) {
+            Token t = makeLz(pos, size, lz.longMatch.offset);
+            tokens[size] = t;
+            present[size] = true;
+            maxSize = maxInt(maxSize, size);
+        }
+
+        if (rleSize > LONGESTRLE) {
+            Token t = new Token();
+            t.type = TokenType.RLE;
+            t.pos = pos;
+            t.size = LONGESTRLE;
+            t.rlebyte = src[pos] & 0xff;
+            tokens[t.size] = t;
+            present[t.size] = true;
+            maxSize = maxInt(maxSize, t.size);
+        } else {
+            for (int size = rleSize; size >= MINRLE; size--) {
+                Token t = new Token();
+                t.type = TokenType.RLE;
+                t.pos = pos;
+                t.size = size;
+                t.rlebyte = src[pos] & 0xff;
+                tokens[size] = t;
+                present[size] = true;
+                maxSize = maxInt(maxSize, size);
+            }
+        }
+
+        int lz2 = lz2Offset(src, pos);
+        if (lz2 > 0) {
+            Token t = new Token();
+            t.type = TokenType.LZ2;
+            t.pos = pos;
+            t.size = LZ2SIZE;
+            t.offset = lz2;
+            tokens[t.size] = t;
+            present[t.size] = true;
+            maxSize = maxInt(maxSize, t.size);
+        }
+        if (zeroRunAt(src, pos, optimalRun)) {
+            Token t = new Token();
+            t.type = TokenType.ZERORUN;
+            t.pos = pos;
+            t.size = optimalRun;
+            if (t.size <= 256) {
+                tokens[t.size] = t;
+                present[t.size] = true;
+                maxSize = maxInt(maxSize, t.size);
+            }
+        }
+
+        int count = 0;
+        for (int size = 1; size <= maxSize; size++) {
+            if (present[size]) {
+                count++;
+            }
+        }
+        Token[] row = new Token[count];
+        int index = 0;
+        for (int size = 1; size <= maxSize; size++) {
+            if (present[size]) {
+                row[index++] = tokens[size];
+            }
+        }
+        return row;
     }
 
     public static byte[] crunchRaw(byte[] src) {
@@ -536,127 +657,23 @@ private static byte[] crunch(byte[] src, Options opt, byte[] addr, int[] optimal
         int optimalRun = findOptimalZero(workSrc);
         optimalRunOut[0] = optimalRun;
 
-        @SuppressWarnings("unchecked")
-        ArrayList<Edge>[] graph = new ArrayList[workLen + 1];
-        for (int i = 0; i <= workLen; i++) {
-            graph[i] = new ArrayList<>();
-        }
+        int[] prefixPrevious = buildPrefixPrevious(workSrc);
+        int[] starts = new int[workLen + 1];
+        ArrayList<Token> transitions = new ArrayList<>();
+        Token[][] rows = new Token[workLen][];
+        final byte[] candidateSource = workSrc;
+        final int candidateOptimalRun = optimalRun;
+        IntStream.range(0, workLen).parallel().forEach(i ->
+            rows[i] = buildCandidateRow(candidateSource, i, candidateOptimalRun, prefixPrevious));
 
-        int maxTokenSize = 256;
         for (int i = 0; i < workLen; i++) {
-            boolean[] present = new boolean[257];
-            Token[] tokens = new Token[257];
-            int maxSize = 0;
-
-            int rleSize = rleLength(workSrc, i);
-            int rleCap = minInt(rleSize, LONGESTRLE);
-
-            Token lz;
-            if (rleCap < LONGESTLONGLZ - 1) {
-                int minlz = maxInt(rleCap + 1, MINLZ);
-                lz = lzBest(workSrc, i, minlz);
-            } else {
-                lz = new Token();
-                lz.type = TokenType.LZ;
-                lz.pos = i;
-                lz.size = 1;
-                lz.offset = 0;
+            starts[i] = transitions.size();
+            for (Token transition : rows[i]) {
+                transitions.add(transition);
             }
 
-            while (lz.size >= MINLZ && lz.size > rleCap) {
-                Token t = copyToken(lz);
-                tokens[t.size] = t;
-                present[t.size] = true;
-                if (t.size > maxSize) {
-                    maxSize = t.size;
-                }
-                lz.size -= 1;
-            }
-
-            if (rleSize > LONGESTRLE) {
-                Token t = new Token();
-                t.type = TokenType.RLE;
-                t.pos = i;
-                t.size = LONGESTRLE;
-                t.rlebyte = workSrc[i] & 0xff;
-                tokens[t.size] = t;
-                present[t.size] = true;
-                if (t.size > maxSize) {
-                    maxSize = t.size;
-                }
-            } else {
-                for (int size = rleSize; size >= MINRLE; size--) {
-                    Token t = new Token();
-                    t.type = TokenType.RLE;
-                    t.pos = i;
-                    t.size = size;
-                    t.rlebyte = workSrc[i] & 0xff;
-                    tokens[t.size] = t;
-                    present[t.size] = true;
-                    if (t.size > maxSize) {
-                        maxSize = t.size;
-                    }
-                }
-            }
-
-            int lz2 = lz2Offset(workSrc, i);
-            if (lz2 > 0) {
-                Token t = new Token();
-                t.type = TokenType.LZ2;
-                t.pos = i;
-                t.size = LZ2SIZE;
-                t.offset = lz2;
-                tokens[t.size] = t;
-                present[t.size] = true;
-                if (t.size > maxSize) {
-                    maxSize = t.size;
-                }
-            }
-
-            if (zeroRunAt(workSrc, i, optimalRun)) {
-                Token t = new Token();
-                t.type = TokenType.ZERORUN;
-                t.pos = i;
-                t.size = optimalRun;
-                if (t.size <= maxTokenSize) {
-                    tokens[t.size] = t;
-                    present[t.size] = true;
-                    if (t.size > maxSize) {
-                        maxSize = t.size;
-                    }
-                }
-            }
-
-            int litMax = minInt(LONGESTLITERAL, workLen - i);
-            for (int size = 1; size <= litMax; size++) {
-                if (!present[size]) {
-                    Token t = new Token();
-                    t.type = TokenType.LITERAL;
-                    t.pos = i;
-                    t.size = size;
-                    tokens[size] = t;
-                    present[size] = true;
-                    if (size > maxSize) {
-                        maxSize = size;
-                    }
-                }
-            }
-
-            for (int size = 1; size <= maxSize; size++) {
-                if (!present[size]) {
-                    continue;
-                }
-                if (size <= 0 || i + size > workLen) {
-                    continue;
-                }
-                Token t = tokens[size];
-                Edge e = new Edge();
-                e.dest = i + size;
-                e.token = t;
-                e.cost = tokenCost(t);
-                graph[i].add(e);
-            }
         }
+        starts[workLen] = transitions.size();
 
         int n = workLen;
         long[] dist = new long[n + 1];
@@ -667,25 +684,49 @@ private static byte[] crunch(byte[] src, Options opt, byte[] addr, int[] optimal
         Arrays.fill(prev, -1);
         dist[0] = 0;
 
-        PriorityQueue<PQItem> pq = new PriorityQueue<>();
-        pq.add(new PQItem(0, 0));
-        while (!pq.isEmpty()) {
-            PQItem item = pq.poll();
-            int u = item.vertex;
-            if (item.dist != dist[u]) {
+        long mdiv = (long)LONGESTLITERAL * 65536L;
+        for (int u = 0; u < n; u++) {
+            if (dist[u] == Long.MAX_VALUE / 4) {
                 continue;
             }
-            if (u == n) {
-                break;
-            }
-            for (Edge edge : graph[u]) {
-                int v = edge.dest;
-                long alt = dist[u] + edge.cost;
-                if (alt < dist[v]) {
+            int specializedLiteralLengths = 0;
+            for (int ti = starts[u]; ti < starts[u + 1]; ti++) {
+                Token transition = transitions.get(ti);
+                int v = u + transition.size;
+                long alt = dist[u] + tokenCost(transition);
+                boolean better = alt < dist[v];
+                if (alt == dist[v] && prev[v] >= 0) {
+                    better = dist[u] < dist[prev[v]];
+                }
+                if (better) {
                     dist[v] = alt;
                     prev[v] = u;
-                    prevToken[v] = copyToken(edge.token);
-                    pq.add(new PQItem(v, alt));
+                    prevToken[v] = transition;
+                }
+                if (transition.size <= LONGESTLITERAL) {
+                    specializedLiteralLengths |= 1 << transition.size;
+                }
+            }
+
+            int literalMax = minInt(LONGESTLITERAL, n - u);
+            for (int size = 1; size <= literalMax; size++) {
+                if ((specializedLiteralLengths & (1 << size)) != 0) {
+                    continue;
+                }
+                int v = u + size;
+                long alt = dist[u] + mdiv * (size + 1L) + 130L - size;
+                boolean better = alt < dist[v];
+                if (alt == dist[v] && prev[v] >= 0) {
+                    better = dist[u] < dist[prev[v]];
+                }
+                if (better) {
+                    Token literal = new Token();
+                    literal.type = TokenType.LITERAL;
+                    literal.pos = u;
+                    literal.size = size;
+                    dist[v] = alt;
+                    prev[v] = u;
+                    prevToken[v] = literal;
                 }
             }
         }
@@ -761,21 +802,6 @@ private static byte[] crunch(byte[] src, Options opt, byte[] addr, int[] optimal
         out.appendByte(TERMINATOR);
 
         return out.toArray();
-    }
-
-    private static class PQItem implements Comparable<PQItem> {
-        int vertex;
-        long dist;
-
-        PQItem(int vertex, long dist) {
-            this.vertex = vertex;
-            this.dist = dist;
-        }
-
-        @Override
-        public int compareTo(PQItem other) {
-            return Long.compare(this.dist, other.dist);
-        }
     }
 
     private static boolean parseJmp(String s, Options opt) {

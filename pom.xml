@@ -5,7 +5,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>tscrunch.kickass</groupId>
   <artifactId>tscrunch-kickass-plugin</artifactId>
-  <version>1.0.0</version>
+  <version>1.0.1</version>
   <name>TSCrunch KickAssembler Plugin</name>
   <description>KickAssembler cruncher plugin for TSCrunch</description>
   <build>
