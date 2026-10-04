@@ -13,6 +13,12 @@ https://github.com/tonysavon/TSCrunch
 - Regular crunching, in-place crunching, and SFX output
 - Segment modifier and .modify usage styles
 
+The parser uses the same cycle-aware cost model as the standalone C, Go and
+Java encoders: packed size takes priority, then estimated 6502 decoder cycles
+select between equal-size parses. The compressed format and assembly decoders
+are unchanged. Across the six-game TSCrunch benchmark, packed size remains
+150,888 bytes and the extreme decoder runs 0.49% faster.
+
 ## Install
 
 Copy the built plugin jar into your KickAssembler classpath and load it:
@@ -195,6 +201,12 @@ mvn clean package
 ```
 
 The built plugin jar will be placed in `target/`.
+
+To check the built archive through KickAssembler in raw, in-place and SFX modes:
+
+```
+python tools/verify_plugin.py path/to/game.prg
+```
 
 ## License
 

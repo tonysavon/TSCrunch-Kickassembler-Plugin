@@ -387,25 +387,32 @@ public class TSCrunch {
     }
 
     private static long tokenCost(Token t) {
-        long mdiv = (long)LONGESTLITERAL * 65536L;
+        // Packed bytes dominate; ties use twice the estimated extreme-decoder
+        // cycles. Length parity is included, page crossings are not modeled.
+        long mdiv = 1L << 32;
         long size = t.size;
         switch (t.type) {
             case LZ:
                 if (lzIsLong(t)) {
-                    return mdiv * 3 + 138 - size;
+                    return mdiv * 3 + 196 + 31 * size - 7 * (size & 1);
                 }
-                return mdiv * 2 + 134 - size;
+                return mdiv * 2 + 156 + 31 * size - 7 * (size & 1);
             case RLE:
-                return mdiv * 2 + 128 - size;
+                return mdiv * 2 + 112 + 19 * size - (size & 1);
             case ZERORUN:
-                return mdiv * 1;
+                return mdiv + 112 + 19 * size;
             case LZ2:
-                return mdiv * 1 + 132 - size;
+                return mdiv + 148;
             case LITERAL:
-                return mdiv * (size + 1) + 130 - size;
+                return literalCost(t.size);
             default:
                 return mdiv * 10;
         }
+    }
+
+    private static long literalCost(int length) {
+        long size = length;
+        return (1L << 32) * (size + 1) + 78 + 29 * size + 5 * (size & 1);
     }
 
     private static int payloadLen(Token t) {
@@ -684,7 +691,6 @@ private static byte[] crunch(byte[] src, Options opt, byte[] addr, int[] optimal
         Arrays.fill(prev, -1);
         dist[0] = 0;
 
-        long mdiv = (long)LONGESTLITERAL * 65536L;
         for (int u = 0; u < n; u++) {
             if (dist[u] == Long.MAX_VALUE / 4) {
                 continue;
@@ -714,7 +720,7 @@ private static byte[] crunch(byte[] src, Options opt, byte[] addr, int[] optimal
                     continue;
                 }
                 int v = u + size;
-                long alt = dist[u] + mdiv * (size + 1L) + 130L - size;
+                long alt = dist[u] + literalCost(size);
                 boolean better = alt < dist[v];
                 if (alt == dist[v] && prev[v] >= 0) {
                     better = dist[u] < dist[prev[v]];
